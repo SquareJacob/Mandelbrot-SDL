@@ -16,14 +16,14 @@
 #define new new( _NORMAL_BLOCK, __FILE__, __LINE__)
 #endif
 
+const int WIDTH = 800, HEIGHT = 600;
 typedef std::chrono::steady_clock::time_point tp;
 typedef std::chrono::microseconds ms;
 tp now() {
 	return std::chrono::high_resolution_clock::now();
 }
 struct cell {
-	double frac;
-	int iter;
+	uint8_t r, g, b;
 };
 
 SDL_Window* window;
@@ -42,18 +42,19 @@ tp start, trueStart;
 int calcTime, drawTime;
 
 double topX = -2.0, topY = -1.5, zoom = 200.0, zoomFactor, localMouseX, localMouseY, color, sReal = 0.0, sImg = 0.0;
-cell pixels[600 * 800];
+cell pixels[WIDTH * HEIGHT];
 cell* d_pixels;
 int maxIter = 1000;
 cell pixel;
 bool timing = true;
-int totalTime = 60;
+const int FRAMECAP = 1000 / 30;
+int totalTime = FRAMECAP;
 
 void debug(int line, std::string file) {
 	std::cout << "Line " << line << " in file " << file << ": " << SDL_GetError() << std::endl;
 }
 
-__global__ void mandelbrot(double topX, double topY, double delta, int max, cell pixels[600 * 800], double sReal, double sImg) {
+__global__ void mandelbrot(double topX, double topY, double delta, int max, cell pixels[WIDTH * HEIGHT], double sReal, double sImg) {
 	double localX = topX + static_cast<float>(blockIdx.x) * delta;
 	double localY = topY + static_cast<float>(threadIdx.x) * delta;
 	/**double squared = localX * localX + localY * localY;
@@ -72,13 +73,19 @@ __global__ void mandelbrot(double topX, double topY, double delta, int max, cell
 			break;
 		}
 	}
-	pixels[threadIdx.x * 800 + blockIdx.x] = { log2(0.5 * log(img * img + real * real) / log(20.0)), i};
+	if (i == max) {
+		pixels[threadIdx.x * WIDTH + blockIdx.x] = { 0, 0, 0 };
+	}
+	else {
+		double color = static_cast<float>(i) + log2(0.5 * log(img * img + real * real) / log(20.0));
+		pixels[threadIdx.x * WIDTH + blockIdx.x] = { static_cast<unsigned char>(255.0 * cos(color * 29.0)), static_cast < unsigned char>(255.0 * cos(color * 33.0)), static_cast < unsigned char>(255.0 * cos(color * 37.0)) };
+	}
 }
 
 int main(int argc, char* argv[]) {
 	if (SDL_Init(SDL_INIT_EVERYTHING) == 0 && TTF_Init() == 0 && Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) == 0) {
 		//Setup
-		window = SDL_CreateWindow("Window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 600, 0);
+		window = SDL_CreateWindow("Window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
 		if (window == NULL) {
 			debug(__LINE__, __FILE__);
 			return 0;
@@ -92,7 +99,7 @@ int main(int argc, char* argv[]) {
 		SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
 		SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-			SDL_TEXTUREACCESS_STREAMING, 800, 600);
+			SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
 		void* txtPixels;
 		int pitch;
 		SDL_PixelFormat* format = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA8888);
@@ -146,17 +153,17 @@ int main(int argc, char* argv[]) {
 			}
 
 			cudaSetDevice(0);
-			cudaMalloc(&d_pixels, static_cast<unsigned long long>(800) * 600 * sizeof(cell));
-			cudaMemcpy(d_pixels, pixels, static_cast<unsigned long long>(600) * 800 * sizeof(cell), cudaMemcpyHostToDevice);
+			cudaMalloc(&d_pixels, static_cast<unsigned long long>(WIDTH) * HEIGHT * sizeof(cell));
+			cudaMemcpy(d_pixels, pixels, static_cast<unsigned long long>(WIDTH) * HEIGHT * sizeof(cell), cudaMemcpyHostToDevice);
 			
 			if (mouseScroll != 0) {
 				zoomFactor = pow(1.1, static_cast<float>(mouseScroll));
 			}
 			else if (keys.contains("Q")) {
-				zoomFactor = pow(1.1, static_cast<float>(totalTime) / 60.0);
+				zoomFactor = pow(1.05, static_cast<float>(totalTime) / static_cast<float>(FRAMECAP));
 			}
 			else if (keys.contains("E")) {
-				zoomFactor = pow(1.1, -static_cast<float>(totalTime) / 60.0);
+				zoomFactor = pow(1.05, -static_cast<float>(totalTime) / static_cast<float>(FRAMECAP));
 			}
 			if (zoomFactor != 0.0) {
 				localMouseX = topX + static_cast<float>(mouseX) / zoom;
@@ -172,16 +179,16 @@ int main(int argc, char* argv[]) {
 			}
 
 			if (keys.contains("W")) {
-				sImg += static_cast<float>(totalTime) / zoom / 60.0;
+				topY -= 5.0 * static_cast<float>(totalTime) / zoom / static_cast<float>(FRAMECAP);
 			}
 			if (keys.contains("A")) {
-				sReal -= static_cast<float>(totalTime) / zoom / 60.0;
+				topX -= 5.0 * static_cast<float>(totalTime) / zoom / static_cast<float>(FRAMECAP);
 			}
 			if (keys.contains("S")) {
-				sImg -= static_cast<float>(totalTime) / zoom / 60.0;
+				topY += 5.0 * static_cast<float>(totalTime) / zoom / static_cast<float>(FRAMECAP);
 			}
 			if (keys.contains("D")) {
-				sReal += static_cast<float>(totalTime) / zoom / 60.0;
+				topX += 5.0 * static_cast<float>(totalTime) / zoom / static_cast<float>(FRAMECAP);
 			}
 
 			//Mandelbrot
@@ -191,9 +198,9 @@ int main(int argc, char* argv[]) {
 				drawTime = 0;
 				start = now();
 			}
-			mandelbrot << <800, 600>> > (topX, topY, 1.0 / static_cast<float>(zoom), maxIter, d_pixels, sReal, sImg);
+			mandelbrot << <WIDTH, HEIGHT>> > (topX, topY, 1.0 / static_cast<float>(zoom), maxIter, d_pixels, sReal, sImg);
 			cudaDeviceSynchronize();
-			cudaMemcpy(pixels, d_pixels, 600 * 800 * sizeof(cell), cudaMemcpyDeviceToHost);
+			cudaMemcpy(pixels, d_pixels, WIDTH * HEIGHT * sizeof(cell), cudaMemcpyDeviceToHost);
 			if (timing) {
 				calcTime += std::chrono::duration_cast<ms>(now() - start).count();
 				start = now();
@@ -201,16 +208,10 @@ int main(int argc, char* argv[]) {
 
 			SDL_LockTexture(texture, NULL, &txtPixels, &pitch);
 			Uint32* pixel_ptr = (Uint32*)txtPixels;
-			for (uint16_t i = 0; i < 800; i++) {
-				for (uint16_t j = 0; j < 600; j++) {
-					pixel = pixels[j * 800 + i];
-					if (pixel.iter == maxIter) {
-						pixel_ptr[j * 800 + i] = SDL_MapRGB(format, 0, 0, 0);
-					}
-					else {
-						color = pixel.iter + pixel.frac;
-						pixel_ptr[j * 800 + i] = SDL_MapRGB(format, 255 * cos(color * 29.0), 255 * cos(color * 33.0), 255 * cos(color * 37.0));
-					}
+			for (uint16_t i = 0; i < WIDTH; i++) {
+				for (uint16_t j = 0; j < HEIGHT; j++) {
+					pixel = pixels[j * WIDTH + i];
+					pixel_ptr[j * WIDTH + i] = SDL_MapRGB(format, pixel.r, pixel.g, pixel.b);
 				}
 			}
 			SDL_UnlockTexture(texture);
@@ -221,9 +222,9 @@ int main(int argc, char* argv[]) {
 				std::cout << "Calc time: " << calcTime / 1000 << " Draw time: " << drawTime / 1000 << std::endl;
 			}
 			totalTime = std::chrono::duration_cast<ms>(now() - trueStart).count() / 1000;
-			if (totalTime < 60) {
-				SDL_Delay(60 - totalTime);
-				totalTime = 60;
+			if (totalTime < FRAMECAP) {
+				SDL_Delay(FRAMECAP - totalTime);
+				totalTime = FRAMECAP;
 			}
 			std::cout << "Total time: " <<  totalTime << std::endl;
 			//cudaError_t err = cudaGetLastError();
